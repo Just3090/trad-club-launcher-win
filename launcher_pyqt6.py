@@ -20,6 +20,8 @@ from PyQt6.QtCore import QPropertyAnimation
 from PyQt6.QtWidgets import QGraphicsOpacityEffect
 from pypresence import Presence
 import psutil
+import shutil
+import tempfile
 
 # =============================================================================
 # CONFIGURACIÓN Y LÓGICA DE DATOS
@@ -317,6 +319,57 @@ class GameLauncherApp(QMainWindow):
         else:
             no_projects_label = QLabel("No se pudieron cargar los proyectos.")
             self.library_layout.addWidget(no_projects_label, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        # Buscar actualizaciones
+        self.check_for_updates()
+    
+    def check_for_updates(self, show_dialogs=False):
+        UPDATE_INFO_URL = "https://traduction-club.live/api/winapp/launcher_update.json"
+        try:
+            info = requests.get(UPDATE_INFO_URL, timeout=10).json()
+            latest_version = info["version"]
+            download_url = info["installer_url"]
+            if latest_version > self.get_current_version():
+                reply = QMessageBox.question(
+                    self,
+                    "Actualización disponible",
+                    f"Hay una nueva versión ({latest_version}). ¿Actualizar ahora?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                )
+                if reply == QMessageBox.StandardButton.Yes:
+                    self.download_and_run_installer(download_url)
+            else:
+                if show_dialogs:
+                    QMessageBox.information(
+                        self,
+                        "Sin actualizaciones",
+                        f"Ya tienes la última versión ({self.get_current_version()})."
+                    )
+        except Exception as e:
+            if show_dialogs:
+                QMessageBox.warning(
+                    self,
+                    "Error de actualización",
+                    f"No se pudo buscar actualizaciones: {e}"
+                )
+
+    def get_current_version(self):
+        return "0.2"
+
+    def download_and_run_installer(self, url):
+        temp_dir = tempfile.gettempdir()
+        installer_path = os.path.join(temp_dir, "launcher_update.msi")
+        try:
+            with requests.get(url, stream=True) as r:
+                r.raise_for_status()
+                with open(installer_path, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        f.write(chunk)
+            subprocess.Popen(["msiexec", "/i", installer_path, "/qn"])
+            QMessageBox.information(self, "Actualización", "El launcher se actualizará. Se cerrará ahora.")
+            QApplication.quit()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"No se pudo actualizar: {e}")
     
     def show_settings(self):
         self.stacked_widget.setCurrentWidget(self.settings_page)
@@ -330,6 +383,12 @@ class GameLauncherApp(QMainWindow):
         label = QLabel("Ajustes (en construcción)")
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(label)
+
+        # Botón para buscar actualizaciones
+        update_btn = QPushButton("Buscar actualizaciones")
+        update_btn.setObjectName("updateButton")
+        update_btn.clicked.connect(lambda: self.check_for_updates(show_dialogs=True))
+        layout.addWidget(update_btn, alignment=Qt.AlignmentFlag.AlignCenter)
 
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
@@ -345,7 +404,7 @@ class GameLauncherApp(QMainWindow):
         content_widget = QWidget()
         layout = QVBoxLayout(content_widget)
         label = QLabel(
-            "Acerca de<br>Tradu-Launcher<br>Versión 0.1<br><br>"
+            "Acerca de<br>Tradu-Launcher<br>Versión 0.2<br><br>"
             "Traduction Club es un grupo de traducción y desarrollo de videojuegos (próximamente) sin fines de lucro.<br>"
             "No poseemos derechos sobre los materiales, juegos, imágenes o marcas mostradas en esta aplicación.<br>"
             "Todo el contenido pertenece a sus respectivos autores y propietarios legales.<br>"
