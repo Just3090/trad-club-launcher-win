@@ -1100,6 +1100,7 @@ class GameLauncherApp(QMainWindow):
                 self.install_button.setEnabled(False)
                 return
             process = subprocess.Popen([norm_executable_path], cwd=game_dir)
+            subprocess.Popen([sys.executable, "overlay.py", exe_name])
             self.install_button.setText("Ejecutando...")
             self.install_button.setEnabled(False)
 
