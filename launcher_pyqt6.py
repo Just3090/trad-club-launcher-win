@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import QMessageBox
 from PyQt6.QtCore import QPropertyAnimation
 from PyQt6.QtWidgets import QGraphicsOpacityEffect
 from pypresence import Presence
+import psutil
 
 # =============================================================================
 # CONFIGURACIÓN Y LÓGICA DE DATOS
@@ -890,25 +891,23 @@ class GameLauncherApp(QMainWindow):
             self.install_button.setEnabled(True)
 
     def launch_game(self, executable_path):
-        """Lanzar el .exe del juego y checar su estado."""
         try:
             abs_executable_path = os.path.abspath(executable_path)
             norm_executable_path = os.path.normpath(abs_executable_path)
             game_dir = os.path.dirname(norm_executable_path)
+            exe_name = os.path.basename(norm_executable_path)
             print(f"Lanzando {norm_executable_path} en el directorio {game_dir}")
             if not os.path.exists(norm_executable_path):
                 print(f"Error: El archivo ejecutable NO EXISTE en {norm_executable_path}")
                 self.install_button.setText("Ejecutable no encontrado")
                 self.install_button.setEnabled(False)
                 return
-            # lanzar el juego y trackearlo
             process = subprocess.Popen([norm_executable_path], cwd=game_dir)
             self.install_button.setText("Ejecutando...")
             self.install_button.setEnabled(False)
 
-            # monitor un proceso
             self.game_monitor_thread = QThread()
-            self.game_monitor_worker = GameProcessMonitor(process)
+            self.game_monitor_worker = GameProcessMonitor(process, exe_name)
             self.game_monitor_worker.moveToThread(self.game_monitor_thread)
             self.game_monitor_thread.started.connect(self.game_monitor_worker.run)
             self.game_monitor_worker.finished.connect(self.on_game_process_finished)
@@ -959,13 +958,20 @@ class GameProcessMonitor(QObject):
     started = pyqtSignal()
     finished = pyqtSignal()
 
-    def __init__(self, process):
+    def __init__(self, process, exe_name):
         super().__init__()
         self.process = process
+        self.exe_name = exe_name
 
     def run(self):
         self.started.emit()
         self.process.wait()
+        for proc in psutil.process_iter(['name']):
+            try:
+                if proc.info['name'] and self.exe_name.lower() in proc.info['name'].lower():
+                    proc.wait()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
         self.finished.emit()
 
 # =============================================================================
