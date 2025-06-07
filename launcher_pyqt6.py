@@ -22,6 +22,7 @@ from pypresence import Presence
 import psutil
 import shutil
 import tempfile
+import socket
 
 # =============================================================================
 # CONFIGURACIÓN Y LÓGICA DE DATOS
@@ -39,6 +40,24 @@ CACHE_EXPIRY_TIME = 3600  # 1 hora
 GAMES_INSTALL_DIR = "installed_games"
 # Ubicación por defecto
 LIBRARIES_FILE = "libraries.json"
+
+def send_overlay_rect(x, y, w, h, r, g, b, a):
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.connect(('127.0.0.1', 54321))
+        cmd = f"draw_rect {x} {y} {w} {h} {r} {g} {b} {a}\n"
+        s.sendall(cmd.encode('utf-8'))
+        s.close()
+    except Exception as e:
+        print(f"Error enviando overlay: {e}")
+
+def inject_overlay_dll(process_name, dll_path):
+    try:
+        injector_path = os.path.join("overlay_native", "injector.exe")
+        # Llama al inyector y espera a que termine (puedes usar Popen si prefieres no bloquear)
+        subprocess.Popen([injector_path, process_name, dll_path])
+    except Exception as e:
+        print(f"Error al inyectar overlay: {e}")
 
 def load_libraries():
     if os.path.exists(LIBRARIES_FILE):
@@ -1099,8 +1118,11 @@ class GameLauncherApp(QMainWindow):
                 self.install_button.setText("Ejecutable no encontrado")
                 self.install_button.setEnabled(False)
                 return
+            # Lanza el juego
             process = subprocess.Popen([norm_executable_path], cwd=game_dir)
-            subprocess.Popen([sys.executable, "overlay.py", exe_name])
+            # Inyecta el overlay DLL (OpenGL)
+            dll_path = os.path.abspath(os.path.join("overlay_native", "game_overlay_gl.dll"))
+            inject_overlay_dll(exe_name, dll_path)
             self.install_button.setText("Ejecutando...")
             self.install_button.setEnabled(False)
 
@@ -1113,6 +1135,8 @@ class GameLauncherApp(QMainWindow):
             self.game_monitor_worker.finished.connect(self.game_monitor_worker.deleteLater)
             self.game_monitor_thread.finished.connect(self.game_monitor_thread.deleteLater)
             self.game_monitor_thread.start()
+
+            send_overlay_rect(100, 100, 300, 100, 0, 1, 0, 0.7)
         except Exception as e:
             print(f"Error al lanzar el juego: {e}")
             self.install_button.setText("Error al lanzar")

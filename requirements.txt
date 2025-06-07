@@ -4,3 +4,4 @@ PyQt6
 pypresence
 psutil
 pywin32
+keyboard

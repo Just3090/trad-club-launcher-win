@@ -7,8 +7,9 @@ import win32process
 import win32api
 from PIL import Image
 import keyboard
-from PyQt6.QtWidgets import QApplication, QWidget
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtWidgets import QApplication, QWidget, QLabel
+from PyQt6.QtCore import Qt, QTimer, QPropertyAnimation
+import ctypes
 
 def find_game_window(exe_name):
     hwnds = []
@@ -59,44 +60,94 @@ class Overlay(QWidget):
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
-        self.setWindowOpacity(0.3)
-        self.setGeometry(*win32gui.GetWindowRect(hwnd))
-        self.show()
+        self.setWindowOpacity(1.0)
+        if hwnd:
+            self.setGeometry(*win32gui.GetWindowRect(hwnd))
+        else:
+            self.setGeometry(100, 100, 800, 400)  # Tamaño y posición fijos para depuración
         self.timer = QTimer()
-        self.timer.timeout.connect(self.follow_game_window)
-        self.timer.start(500)
+        if hwnd:
+            self.timer.timeout.connect(self.follow_game_window)
+            self.timer.start(500)
+
+        # Fondo visible para depuración (elimina/commenta después de probar)
+        self.setStyleSheet("background-color: rgba(255,0,0,0.3);")
+
+        # Mensaje tipo Steam en la esquina inferior izquierda
+        self.message_label = QLabel("✔ Overlay de Tradu-Launcher iniciado correctamente", self)
+        self.message_label.setStyleSheet("""
+            QLabel {
+                color: #e6e6e6;
+                background-color: rgba(24, 26, 32, 240);
+                border-radius: 14px;
+                font-size: 22px;
+                font-weight: bold;
+                padding: 22px 48px;
+                border: 2px solid #89b4fa;
+                min-width: 360px;
+            }
+        """)
+        self.message_label.adjustSize()
+        self.message_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.message_label.setVisible(True)
+        self.position_message_steam_style()
+
+        self.fade_in_message()
+        QTimer.singleShot(4000, self.fade_out_message)
+
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+        hwnd_overlay = int(self.winId())
+        win32gui.SetWindowPos(
+            hwnd_overlay,
+            win32con.HWND_TOPMOST,
+            0, 0, 0, 0,
+            win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_SHOWWINDOW
+        )
+
+    def position_message_steam_style(self):
+        rect = self.geometry()
+        w = self.message_label.width()
+        h = self.message_label.height()
+        margin_x = 36
+        margin_y = 36
+        self.message_label.move(
+            margin_x,
+            rect.height() - h - margin_y
+        )
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.position_message_steam_style()
+
+    def fade_in_message(self):
+        self.anim = QPropertyAnimation(self.message_label, b"windowOpacity")
+        self.anim.setDuration(400)
+        self.anim.setStartValue(0)
+        self.anim.setEndValue(1)
+        self.anim.start()
+
+    def fade_out_message(self):
+        self.anim = QPropertyAnimation(self.message_label, b"windowOpacity")
+        self.anim.setDuration(800)
+        self.anim.setStartValue(1)
+        self.anim.setEndValue(0)
+        self.anim.finished.connect(lambda: self.message_label.setVisible(False))
+        self.anim.start()
 
     def follow_game_window(self):
-        rect = win32gui.GetWindowRect(self.hwnd)
-        self.setGeometry(*rect)
+        if self.hwnd:
+            rect = win32gui.GetWindowRect(self.hwnd)
+            self.setGeometry(*rect)
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Uso: python overlay.py <nombre_ejecutable>")
-        sys.exit(1)
-    GAME_EXE_NAME = sys.argv[1]
-
-    hwnd = None
-    max_retries = 120  # 120 * 0.5s = 60 segundos
-    for i in range(max_retries):
-        hwnd = find_game_window(GAME_EXE_NAME)
-        if hwnd:
-            print(f"Ventana encontrada después de {i*0.5:.1f} segundos.")
-            break
-        time.sleep(0.5)
-    if not hwnd:
-        print("No se encontró la ventana del juego.")
-        sys.exit(1)
-
     app = QApplication(sys.argv)
-    overlay = Overlay(hwnd)
-
-    def on_hotkey():
-        timestamp = int(time.time())
-        save_path = f"screenshot_{timestamp}.png"
-        capture_window(hwnd, save_path)
-        print(f"Captura guardada en {save_path}")
-
-    keyboard.add_hotkey("F12", on_hotkey)
-
+    hwnd = find_game_window("notepad.exe")
+    if hwnd:
+        overlay = Overlay(hwnd)
+    else:
+        print("No se encontró la ventana de Notepad.")
+        sys.exit(1)
     sys.exit(app.exec())
