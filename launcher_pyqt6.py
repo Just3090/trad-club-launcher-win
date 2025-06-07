@@ -9,11 +9,11 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QProgressBar, QScrollArea, QStackedWidget,
     QFrame, QSizePolicy, QListWidget, QListWidgetItem, QSystemTrayIcon,
-    QFileDialog
+    QFileDialog, QDialog
 )
 from PyQt6.QtGui import QPixmap, QImage, QFont, QIcon, QPainter
 from PyQt6.QtCore import (
-    Qt, QThread, QObject, pyqtSignal, QSize
+    Qt, QThread, QObject, pyqtSignal, QSize, QTimer
 )
 from PyQt6.QtWidgets import QMessageBox
 from PyQt6.QtCore import QPropertyAnimation
@@ -354,21 +354,53 @@ class GameLauncherApp(QMainWindow):
                 )
 
     def get_current_version(self):
-        return "0.2"
+        return "0.7"
 
     def download_and_run_installer(self, url):
         temp_dir = tempfile.gettempdir()
         installer_path = os.path.join(temp_dir, "launcher_update.msi")
+        lock_path = os.path.join(temp_dir, "launcher_update.lock")
+        with open(lock_path, "w") as f:
+            f.write("LOCK")
+        dialog = UpdateProgressDialog(self)
+        dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
+        dialog.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, False)
+        dialog.show()
+        QApplication.processEvents()
         try:
             with requests.get(url, stream=True) as r:
                 r.raise_for_status()
+                total = int(r.headers.get("content-length", 0))
+                downloaded = 0
                 with open(installer_path, "wb") as f:
                     for chunk in r.iter_content(chunk_size=8192):
-                        f.write(chunk)
-            subprocess.Popen(["msiexec", "/i", installer_path, "/qn"])
-            QMessageBox.information(self, "Actualización", "El launcher se actualizará. Se cerrará ahora.")
+                        if chunk:
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            if total > 0:
+                                percent = int(downloaded * 100 / total)
+                                dialog.set_progress(percent)
+                                QApplication.processEvents()
+            dialog.set_label("Instalando actualización...")
+            dialog.set_progress(100)
+            QApplication.processEvents()
+            proc = subprocess.Popen(["msiexec", "/i", installer_path, "/qn"])
+            check_timer = QTimer()
+            def check_proc():
+                if proc.poll() is not None:
+                    dialog.accept()
+            check_timer.timeout.connect(check_proc)
+            check_timer.start(500)
+            dialog.exec()
+            check_timer.stop()
+            if os.path.exists(lock_path):
+                os.remove(lock_path)
+            QMessageBox.information(self, "Actualización", "El launcher se ha actualizado. Puedes abrirlo de nuevo.")
             QApplication.quit()
         except Exception as e:
+            dialog.close()
+            if os.path.exists(lock_path):
+                os.remove(lock_path)
             QMessageBox.critical(self, "Error", f"No se pudo actualizar: {e}")
     
     def show_settings(self):
@@ -404,7 +436,7 @@ class GameLauncherApp(QMainWindow):
         content_widget = QWidget()
         layout = QVBoxLayout(content_widget)
         label = QLabel(
-            "Acerca de<br>Tradu-Launcher<br>Versión 0.2<br><br>"
+            "Acerca de<br>Tradu-Launcher<br>Versión 0.7<br><br>"
             "Traduction Club es un grupo de traducción y desarrollo de videojuegos (próximamente) sin fines de lucro.<br>"
             "No poseemos derechos sobre los materiales, juegos, imágenes o marcas mostradas en esta aplicación.<br>"
             "Todo el contenido pertenece a sus respectivos autores y propietarios legales.<br>"
@@ -610,6 +642,12 @@ class GameLauncherApp(QMainWindow):
         header_layout.addWidget(self.back_button, alignment=Qt.AlignmentFlag.AlignLeft)
         header_layout.addStretch()
 
+        self.locate_folder_button = QPushButton("Localizar carpeta del juego")
+        self.locate_folder_button.setObjectName("locateFolderButton")
+        self.locate_folder_button.setVisible(False)
+        self.locate_folder_button.clicked.connect(self._on_locate_folder_clicked)
+        header_layout.addWidget(self.locate_folder_button, alignment=Qt.AlignmentFlag.AlignRight)
+
         # --- SCROLLABLE CONTENT ---
         content_widget = QWidget()
         content_layout = QVBoxLayout(content_widget)
@@ -701,6 +739,16 @@ class GameLauncherApp(QMainWindow):
             if os.path.exists(executable_path):
                 return executable_path
         return None
+    
+    def _on_locate_folder_clicked(self):
+        if hasattr(self, "_current_exe_path") and self._current_exe_path:
+            folder = os.path.dirname(self._current_exe_path)
+            if sys.platform == "win32":
+                os.startfile(folder)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", folder])
+            else:
+                subprocess.Popen(["xdg-open", folder])
 
     def show_project_details(self, project_data):
         self.current_project_id_in_detail_view = project_data['id_proyecto']
@@ -728,6 +776,11 @@ class GameLauncherApp(QMainWindow):
             self.detail_image.setPixmap(pixmap.scaled(self.detail_image.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
 
         executable_path = self.check_if_game_installed(project_data)
+        self._current_exe_path = executable_path
+        if executable_path:
+            self.locate_folder_button.setVisible(True)
+        else:
+            self.locate_folder_button.setVisible(False)
         try:
             self.install_button.clicked.disconnect()
         except TypeError:
@@ -909,6 +962,7 @@ class GameLauncherApp(QMainWindow):
             except TypeError:
                 pass
             self.install_button.clicked.connect(lambda: self.launch_game(executable_path))
+            self.locate_folder_button.setVisible(True)
 
         # notificación con icono dinámico
         project_title = None
@@ -1045,6 +1099,29 @@ def fade_in_widget(widget, duration=500):
     anim.setEndValue(1)
     anim.start()
     widget._fade_anim = anim
+
+# =============================================================================
+# GESTOR DE UPDATES
+# =============================================================================
+class UpdateProgressDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Actualizando Tradu-Launcher")
+        self.setModal(True)
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
+        layout = QVBoxLayout(self)
+        self.label = QLabel("Descargando actualización...")
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 100)
+        layout.addWidget(self.label)
+        layout.addWidget(self.progress)
+        self.setFixedSize(400, 120)
+
+    def set_progress(self, value):
+        self.progress.setValue(value)
+
+    def set_label(self, text):
+        self.label.setText(text)
 
 # =============================================================================
 # ESTILOS (QSS) Y EL def main()
@@ -1192,18 +1269,25 @@ def main():
     # Crear directorios necesarios
     for dir_path in [IMAGE_CACHE_DIR, GAMES_INSTALL_DIR]:
         os.makedirs(dir_path, exist_ok=True)
-    
+
+    temp_dir = tempfile.gettempdir()
+    update_lock_path = os.path.join(temp_dir, "launcher_update.lock")
+    if os.path.exists(update_lock_path):
+        app = QApplication(sys.argv)
+        QMessageBox.critical(None, "Actualización en curso", "El launcher se está actualizando. Por favor, espera a que termine la instalación antes de volver a abrirlo.")
+        sys.exit(1)
+
     # Iniciar la aplicación PyQt
     app = QApplication(sys.argv)
     app.setStyleSheet(STYLESHEET) # Aplicar QSS
-    
+
     # Cargar datos
     projects_data = load_projects_data()
-    
+
     # Crear y mostrar la ventana principal
     window = GameLauncherApp(projects_data)
     window.show()
-    
+
     sys.exit(app.exec())
 
 if __name__ == "__main__":
