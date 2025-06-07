@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QProgressBar, QScrollArea, QStackedWidget,
     QFrame, QSizePolicy, QListWidget, QListWidgetItem, QSystemTrayIcon,
-    QFileDialog, QDialog
+    QFileDialog, QDialog, QGroupBox
 )
 from PyQt6.QtGui import QPixmap, QImage, QFont, QIcon, QPainter
 from PyQt6.QtCore import (
@@ -354,7 +354,7 @@ class GameLauncherApp(QMainWindow):
                 )
 
     def get_current_version(self):
-        return "0.7"
+        return "0.8"
 
     def download_and_run_installer(self, url):
         temp_dir = tempfile.gettempdir()
@@ -409,16 +409,98 @@ class GameLauncherApp(QMainWindow):
     def show_about(self):
         self.stacked_widget.setCurrentWidget(self.about_page)
 
+    def update_libraries_list(self):
+        """Actualiza la lista de bibliotecas en la sección de ajustes."""
+        if hasattr(self, 'libraries_list'):
+            self.libraries_list.clear()
+            self.libraries_list.addItems(load_libraries())
+
     def _create_settings_page(self):
         content_widget = QWidget()
         layout = QVBoxLayout(content_widget)
-        label = QLabel("Ajustes (en construcción)")
+        layout.setContentsMargins(32, 32, 32, 32)
+        layout.setSpacing(24)
+
+        label = QLabel("Ajustes")
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setObjectName("settingsTitle")
+        label.setStyleSheet("font-size: 26px; font-weight: bold; margin-bottom: 18px; color: #cdd6f4;")
         layout.addWidget(label)
 
-        # Botón para buscar actualizaciones
+        # --- Gestión de bibliotecas ---
+        libraries_group = QGroupBox("Bibliotecas de juegos")
+        libraries_group.setStyleSheet("QGroupBox { font-size: 18px; font-weight: bold; color: #89b4fa; border: 1px solid #45475a; border-radius: 8px; margin-top: 8px; padding: 12px; }")
+        group_layout = QVBoxLayout(libraries_group)
+        group_layout.setSpacing(10)
+
+        self.libraries_list = QListWidget()
+        self.libraries_list.addItems(load_libraries())
+        self.libraries_list.setStyleSheet("background: #232634; color: #cdd6f4; border-radius: 6px; font-size: 15px;")
+        group_layout.addWidget(self.libraries_list)
+
+        btns_widget = QWidget()
+        btns_layout = QHBoxLayout(btns_widget)
+        btns_layout.setContentsMargins(0, 0, 0, 0)
+        btns_layout.setSpacing(10)
+
+        remove_btn = QPushButton("Eliminar biblioteca seleccionada")
+        remove_btn.setStyleSheet("background: #f38ba8; color: #fff; font-weight: bold; border-radius: 6px; padding: 8px 16px;")
+        def remove_selected_library():
+            selected = self.libraries_list.currentItem()
+            if not selected:
+                QMessageBox.warning(self, "Selecciona una biblioteca", "Selecciona una biblioteca para eliminar.")
+                return
+            library_path = selected.text()
+            confirm = QMessageBox.question(
+                self,
+                "Eliminar biblioteca",
+                f"¿Seguro que quieres eliminar la biblioteca?\nSe desinstalarán todos los juegos en esa carpeta.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if confirm == QMessageBox.StandardButton.Yes:
+                for folder in os.listdir(library_path):
+                    full_path = os.path.join(library_path, folder)
+                    if os.path.isdir(full_path):
+                        try:
+                            shutil.rmtree(full_path)
+                        except Exception as e:
+                            print(f"Error al eliminar {full_path}: {e}")
+                libraries = load_libraries()
+                libraries = [lib for lib in libraries if lib != library_path]
+                save_libraries(libraries)
+                self.update_libraries_list()
+                self.populate_sidebar()  # Actualiza la barra lateral
+                QMessageBox.information(self, "Biblioteca eliminada", "Biblioteca y juegos eliminados correctamente.")
+        remove_btn.clicked.connect(remove_selected_library)
+        btns_layout.addWidget(remove_btn)
+        group_layout.addWidget(btns_widget)
+
+        layout.addWidget(libraries_group)
+
+        # --- Botón para abrir persistentes de RenPy ---
+        renpy_group = QGroupBox("Persistentes de Ren'Py")
+        renpy_group.setStyleSheet("QGroupBox { font-size: 18px; font-weight: bold; color: #89b4fa; border: 1px solid #45475a; border-radius: 8px; margin-top: 8px; padding: 12px; }")
+        renpy_layout = QVBoxLayout(renpy_group)
+        renpy_btn = QPushButton("Abrir carpeta de persistentes de Ren'Py")
+        renpy_btn.setStyleSheet("background: #fab387; color: #1e1e2e; font-weight: bold; border-radius: 6px; padding: 8px 16px;")
+        def open_renpy_persistent():
+            renpy_path = os.path.expandvars(r"%appdata%\RenPy")
+            if not os.path.exists(renpy_path):
+                os.makedirs(renpy_path, exist_ok=True)
+            if sys.platform == "win32":
+                os.startfile(renpy_path)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", renpy_path])
+            else:
+                subprocess.Popen(["xdg-open", renpy_path])
+        renpy_btn.clicked.connect(open_renpy_persistent)
+        renpy_layout.addWidget(renpy_btn)
+        layout.addWidget(renpy_group)
+
+        # --- Botón para buscar actualizaciones ---
         update_btn = QPushButton("Buscar actualizaciones")
         update_btn.setObjectName("updateButton")
+        update_btn.setStyleSheet("background: #89b4fa; color: #1e1e2e; font-weight: bold; border-radius: 6px; padding: 8px 16px;")
         update_btn.clicked.connect(lambda: self.check_for_updates(show_dialogs=True))
         layout.addWidget(update_btn, alignment=Qt.AlignmentFlag.AlignCenter)
 
@@ -436,7 +518,7 @@ class GameLauncherApp(QMainWindow):
         content_widget = QWidget()
         layout = QVBoxLayout(content_widget)
         label = QLabel(
-            "Acerca de<br>Tradu-Launcher<br>Versión 0.7<br><br>"
+            "Acerca de<br>Tradu-Launcher<br>Versión 0.8<br><br>"
             "Traduction Club es un grupo de traducción y desarrollo de videojuegos (próximamente) sin fines de lucro.<br>"
             "No poseemos derechos sobre los materiales, juegos, imágenes o marcas mostradas en esta aplicación.<br>"
             "Todo el contenido pertenece a sus respectivos autores y propietarios legales.<br>"
@@ -869,6 +951,8 @@ class GameLauncherApp(QMainWindow):
             os.makedirs(new_library, exist_ok=True)
             libraries.append(new_library)
             save_libraries(libraries)
+            self.update_libraries_list()
+            self.populate_sidebar()
             library_path = new_library
         else:
             library_path = selected
