@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QProgressBar, QScrollArea, QStackedWidget,
     QFrame, QSizePolicy, QListWidget, QListWidgetItem, QSystemTrayIcon,
-    QFileDialog, QDialog, QGroupBox
+    QFileDialog, QDialog, QGroupBox, QLineEdit
 )
 from PyQt6.QtGui import QPixmap, QImage, QFont, QIcon, QPainter
 from PyQt6.QtCore import (
@@ -23,6 +23,7 @@ import psutil
 import shutil
 import tempfile
 import socket
+import webbrowser
 
 # =============================================================================
 # CONFIGURACIÓN Y LÓGICA DE DATOS
@@ -40,24 +41,86 @@ CACHE_EXPIRY_TIME = 3600  # 1 hora
 GAMES_INSTALL_DIR = "installed_games"
 # Ubicación por defecto
 LIBRARIES_FILE = "libraries.json"
+# Archivo de configs
+SETTINGS_FILE = "settings.json"
 
-def send_overlay_rect(x, y, w, h, r, g, b, a):
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.connect(('127.0.0.1', 54321))
-        cmd = f"draw_rect {x} {y} {w} {h} {r} {g} {b} {a}\n"
-        s.sendall(cmd.encode('utf-8'))
-        s.close()
-    except Exception as e:
-        print(f"Error enviando overlay: {e}")
+# def send_overlay_rect(x, y, w, h, r, g, b, a):
+#     try:
+#         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+#         s.connect(('127.0.0.1', 54321))
+#         cmd = f"draw_rect {x} {y} {w} {h} {r} {g} {b} {a}\n"
+#         s.sendall(cmd.encode('utf-8'))
+#         s.close()
+#     except Exception as e:
+#         print(f"Error enviando overlay: {e}")
 
-def inject_overlay_dll(process_name, dll_path):
+# def inject_overlay_dll(process_name, dll_path):
+#     try:
+#         injector_path = os.path.join("overlay_native", "injector.exe")
+#         # Llama al inyector y espera a que termine (puedes usar Popen si prefieres no bloquear)
+#         subprocess.Popen([injector_path, process_name, dll_path])
+#     except Exception as e:
+#         print(f"Error al inyectar overlay: {e}")
+
+# TOKEN
+TOKEN_FILE = "user_token.json"
+
+def load_settings():
+    if os.path.exists(SETTINGS_FILE):
+        with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {"overlay_enabled": True}
+
+def save_settings(settings):
+    with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+        json.dump(settings, f, indent=2)
+
+
+def save_token(token, username=None, avatar_url=None):
+    data = {"token": token}
+    if username:
+        data["username"] = username
+    if avatar_url:
+        data["avatar_url"] = avatar_url
+    with open(TOKEN_FILE, "w") as f:
+        json.dump(data, f)
+
+def load_token():
+    if os.path.exists(TOKEN_FILE):
+        with open(TOKEN_FILE, "r") as f:
+            data = json.load(f)
+            return data.get("token")
+    return None
+
+def load_user_info():
+    if os.path.exists(TOKEN_FILE):
+        with open(TOKEN_FILE, "r") as f:
+            data = json.load(f)
+            return data.get("username"), data.get("avatar_url")
+    return None, None
+
+def clear_token():
+    if os.path.exists(TOKEN_FILE):
+        os.remove(TOKEN_FILE)
+
+def authenticate_user(username, password):
+    url = "https://traduction-club.live/api/login/"
     try:
-        injector_path = os.path.join("overlay_native", "injector.exe")
-        # Llama al inyector y espera a que termine (puedes usar Popen si prefieres no bloquear)
-        subprocess.Popen([injector_path, process_name, dll_path])
+        response = requests.post(url, json={"username": username, "password": password}, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            return data.get("access"), data.get("username"), data.get("avatar_url")
+        else:
+            return None, None, None
     except Exception as e:
-        print(f"Error al inyectar overlay: {e}")
+        print(f"Error autenticando: {e}")
+        return None, None, None
+    
+def get_auth_headers():
+    token = load_token()
+    if token:
+        return {"Authorization": f"Bearer {token}"}
+    return {}
 
 def load_libraries():
     if os.path.exists(LIBRARIES_FILE):
@@ -248,6 +311,7 @@ class GameLauncherApp(QMainWindow):
         self.discord_client_id = "1365476199777828978"
         self.rpc = None
         self.init_discord_rpc()
+        self.settings = load_settings()
 
         self.tray_icon = QSystemTrayIcon(self)
         self.tray_icon.setIcon(QIcon("icon.png"))
@@ -276,6 +340,47 @@ class GameLauncherApp(QMainWindow):
         navbar_layout.addWidget(self.btn_settings)
         navbar_layout.addWidget(self.btn_about)
         navbar_layout.addStretch()
+
+        self.session_btn = QPushButton("Cerrar sesión")
+        self.session_btn.setObjectName("navbarButton")
+        self.session_btn.clicked.connect(self.logout)
+        navbar_layout.addWidget(self.session_btn, alignment=Qt.AlignmentFlag.AlignRight)
+
+        self.user_btn = QPushButton()
+        self.user_btn.setObjectName("userButton")
+        self.user_btn.setStyleSheet("""
+            QPushButton#userButton {
+                background: transparent;
+                border: none;
+                padding: 0 12px;
+                min-width: 40px;
+                min-height: 40px;
+                border-radius: 20px;
+                color: #cdd6f4;
+                font-size: 15px;
+                font-weight: bold;
+                transition: background 0.2s;
+            }
+            QPushButton#userButton:hover {
+                background: #313244;
+                border: 1.5px solid #89b4fa;
+                color: #89b4fa;
+            }
+        """)
+        self.user_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.user_btn.clicked.connect(self.show_account_details)
+        username, avatar_url = load_user_info()
+        if avatar_url:
+            # Descarga el avatar si es necesario
+            avatar_path = download_and_cache_image(avatar_url, f"{username}_avatar")
+            if avatar_path and os.path.exists(avatar_path):
+                pixmap = QPixmap(avatar_path).scaled(32, 32, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                self.user_btn.setIcon(QIcon(pixmap))
+                self.user_btn.setIconSize(QSize(32, 32))
+        if username:
+            self.user_btn.setText(f"  {username}")
+        navbar_layout.addWidget(self.user_btn, alignment=Qt.AlignmentFlag.AlignRight)
+        navbar_layout.addWidget(self.session_btn, alignment=Qt.AlignmentFlag.AlignRight)
 
         # --- Layout principal central ---
         self.sidebar = QListWidget()
@@ -341,6 +446,32 @@ class GameLauncherApp(QMainWindow):
 
         # Buscar actualizaciones
         self.check_for_updates()
+
+    def show_account_details(self):
+        username, avatar_url = load_user_info()
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Detalles de la cuenta")
+        layout = QVBoxLayout(dialog)
+        if avatar_url:
+            avatar_path = download_and_cache_image(avatar_url, f"{username}_avatar")
+            if avatar_path and os.path.exists(avatar_path):
+                avatar_label = QLabel()
+                avatar_label.setPixmap(QPixmap(avatar_path).scaled(64, 64, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+                avatar_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                layout.addWidget(avatar_label)
+        layout.addWidget(QLabel(f"<b>Usuario:</b> {username}"))
+        # Puedes agregar más detalles aquí si tu API los devuelve
+        close_btn = QPushButton("Cerrar")
+        close_btn.clicked.connect(dialog.accept)
+        layout.addWidget(close_btn)
+        dialog.exec()
+
+    def logout(self):
+        clear_token()
+        QMessageBox.information(self, "Sesión cerrada", "Tu sesión ha sido cerrada.")
+        self.close()
+        python = sys.executable
+        os.execl(python, python, *sys.argv)
     
     def check_for_updates(self, show_dialogs=False):
         UPDATE_INFO_URL = "https://traduction-club.live/api/winapp/launcher_update.json"
@@ -373,7 +504,7 @@ class GameLauncherApp(QMainWindow):
                 )
 
     def get_current_version(self):
-        return "0.8"
+        return "0.9"
 
     def download_and_run_installer(self, url):
         temp_dir = tempfile.gettempdir()
@@ -516,6 +647,17 @@ class GameLauncherApp(QMainWindow):
         renpy_layout.addWidget(renpy_btn)
         layout.addWidget(renpy_group)
 
+        # --- Overlay toggle ---
+        from PyQt6.QtWidgets import QCheckBox
+        overlay_checkbox = QCheckBox("Activar overlay en los juegos (solo funciona en juegos con modo ventana)")
+        overlay_checkbox.setChecked(self.settings.get("overlay_enabled", True))
+        overlay_checkbox.setStyleSheet("font-size: 16px; color: #cdd6f4;")
+        def on_overlay_toggle(state):
+            self.settings["overlay_enabled"] = bool(state)
+            save_settings(self.settings)
+        overlay_checkbox.stateChanged.connect(on_overlay_toggle)
+        layout.addWidget(overlay_checkbox)
+
         # --- Botón para buscar actualizaciones ---
         update_btn = QPushButton("Buscar actualizaciones")
         update_btn.setObjectName("updateButton")
@@ -537,7 +679,7 @@ class GameLauncherApp(QMainWindow):
         content_widget = QWidget()
         layout = QVBoxLayout(content_widget)
         label = QLabel(
-            "Acerca de<br>Tradu-Launcher<br>Versión 0.8<br><br>"
+            "Acerca de<br>Tradu-Launcher<br>Versión 0.9<br><br>"
             "Traduction Club es un grupo de traducción y desarrollo de videojuegos (próximamente) sin fines de lucro.<br>"
             "No poseemos derechos sobre los materiales, juegos, imágenes o marcas mostradas en esta aplicación.<br>"
             "Todo el contenido pertenece a sus respectivos autores y propietarios legales.<br>"
@@ -1118,11 +1260,12 @@ class GameLauncherApp(QMainWindow):
                 self.install_button.setText("Ejecutable no encontrado")
                 self.install_button.setEnabled(False)
                 return
-            # Lanza el juego
             process = subprocess.Popen([norm_executable_path], cwd=game_dir)
-            # Inyecta el overlay DLL (OpenGL)
-            dll_path = os.path.abspath(os.path.join("overlay_native", "game_overlay_gl.dll"))
-            inject_overlay_dll(exe_name, dll_path)
+
+            if self.settings.get("overlay_enabled", True):
+                overlay_path = os.path.abspath("overlay.exe")
+                self.overlay_process = subprocess.Popen([overlay_path, exe_name])
+
             self.install_button.setText("Ejecutando...")
             self.install_button.setEnabled(False)
 
@@ -1135,8 +1278,6 @@ class GameLauncherApp(QMainWindow):
             self.game_monitor_worker.finished.connect(self.game_monitor_worker.deleteLater)
             self.game_monitor_thread.finished.connect(self.game_monitor_thread.deleteLater)
             self.game_monitor_thread.start()
-
-            send_overlay_rect(100, 100, 300, 100, 0, 1, 0, 0.7)
         except Exception as e:
             print(f"Error al lanzar el juego: {e}")
             self.install_button.setText("Error al lanzar")
@@ -1160,6 +1301,13 @@ class GameLauncherApp(QMainWindow):
                 print(f"Error al actualizar Rich Presence: {e}")
 
     def on_game_process_finished(self):
+        if hasattr(self, "overlay_process") and self.overlay_process and self.overlay_process.poll() is None:
+            try:
+                self.overlay_process.terminate()
+            except Exception as e:
+                print(f"Error cerrando overlay: {e}")
+            self.overlay_process = None
+
         # restaurar el botón "Jugar" cuando el juego se cierre
         self.install_button.setText("Jugar")
         self.install_button.setEnabled(True)
@@ -1169,7 +1317,7 @@ class GameLauncherApp(QMainWindow):
                     state="En el launcher", 
                     details="Explorando la biblioteca",
                     buttons=[{"label": "Página Web", "url": "https://traduction-club.live/"}]
-                    )
+                )
             except Exception as e:
                 print(f"Error al actualizar Rich Presence: {e}")
 
@@ -1231,6 +1379,65 @@ class UpdateProgressDialog(QDialog):
 
     def set_label(self, text):
         self.label.setText(text)
+
+# =============================================================================
+# GESTOR DE CUENTAS
+# =============================================================================
+class LoginWidget(QWidget):
+    login_success = pyqtSignal(object)
+
+    def __init__(self):
+        super().__init__()
+        layout = QVBoxLayout(self)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setStyleSheet("background: #1e1e2e;")
+
+        self.title = QLabel("Iniciar sesión en Tradu-Launcher")
+        self.title.setStyleSheet("font-size: 22px; font-weight: bold; color: #cdd6f4;")
+        self.title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.title)
+
+        self.user_input = QLineEdit()
+        self.user_input.setPlaceholderText("Usuario")
+        self.user_input.setStyleSheet("font-size: 16px; padding: 8px;")
+        layout.addWidget(self.user_input)
+
+        self.pass_input = QLineEdit()
+        self.pass_input.setPlaceholderText("Contraseña")
+        self.pass_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.pass_input.setStyleSheet("font-size: 16px; padding: 8px;")
+        layout.addWidget(self.pass_input)
+
+        self.login_btn = QPushButton("Iniciar sesión")
+        self.login_btn.setStyleSheet("background: #89b4fa; color: #1e1e2e; font-weight: bold; border-radius: 8px; padding: 10px;")
+        self.login_btn.clicked.connect(self.try_login)
+        layout.addWidget(self.login_btn)
+
+        self.error_label = QLabel("")
+        self.error_label.setStyleSheet("color: #f38ba8; font-size: 14px;")
+        layout.addWidget(self.error_label)
+
+        self.register_btn = QPushButton("Registrarse en la web")
+        self.register_btn.setStyleSheet("background: #fab387; color: #1e1e2e; font-weight: bold; border-radius: 8px; padding: 8px;")
+        self.register_btn.clicked.connect(lambda: webbrowser.open("https://traduction-club.live/signup/"))
+        layout.addWidget(self.register_btn)
+
+    def try_login(self):
+        username_input = self.user_input.text().strip()
+        password = self.pass_input.text().strip()
+        self.error_label.setText("")
+        if not username_input or not password:
+            self.error_label.setText("Completa usuario y contraseña.")
+            return
+        token, username, avatar_url = authenticate_user(username_input, password)
+        print("DEBUG login:", token, username, avatar_url)
+        if token:
+            # Si username es None, usa el que escribió el usuario
+            if not username:
+                username = username_input
+            self.login_success.emit((token, username, avatar_url))
+        else:
+            self.error_label.setText("Usuario o contraseña incorrectos.")
 
 # =============================================================================
 # ESTILOS (QSS) Y EL def main()
@@ -1375,6 +1582,14 @@ QListWidget#sidebar::item {
 """
 
 def main():
+
+    def on_login_success(user_data):
+        token, username, avatar_url = user_data
+        save_token(token, username, avatar_url)
+        login_widget.close()
+        projects_data = load_projects_data()
+        window = GameLauncherApp(projects_data)
+        window.show()
     # Crear directorios necesarios
     for dir_path in [IMAGE_CACHE_DIR, GAMES_INSTALL_DIR]:
         os.makedirs(dir_path, exist_ok=True)
@@ -1386,18 +1601,20 @@ def main():
         QMessageBox.critical(None, "Actualización en curso", "El launcher se está actualizando. Por favor, espera a que termine la instalación antes de volver a abrirlo.")
         sys.exit(1)
 
-    # Iniciar la aplicación PyQt
     app = QApplication(sys.argv)
-    app.setStyleSheet(STYLESHEET) # Aplicar QSS
+    app.setStyleSheet(STYLESHEET)
 
-    # Cargar datos
-    projects_data = load_projects_data()
-
-    # Crear y mostrar la ventana principal
-    window = GameLauncherApp(projects_data)
-    window.show()
-
-    sys.exit(app.exec())
+    token = load_token()
+    if not token:
+        login_widget = LoginWidget()
+        login_widget.show()
+        login_widget.login_success.connect(on_login_success)
+        sys.exit(app.exec())
+    else:
+        projects_data = load_projects_data()
+        window = GameLauncherApp(projects_data)
+        window.show()
+        sys.exit(app.exec())
 
 if __name__ == "__main__":
     main()

@@ -11,3 +11,10 @@ setup.py
 
 libraries.json
 proyectos_cache.json
+
+screenshots/
+
+settings.json
+user_token.json
+
+trad-club-web-app/
