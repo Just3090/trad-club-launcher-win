@@ -24,6 +24,9 @@ import shutil
 import tempfile
 import socket
 import webbrowser
+import functools
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # =============================================================================
 # CONFIGURACIÓN Y LÓGICA DE DATOS
@@ -295,6 +298,27 @@ class DownloadWorker(QObject):
             self.error.emit(f"Error inesperado: {e}")
 
 
+def refresh_access_token():
+        if os.path.exists(TOKEN_FILE):
+            with open(TOKEN_FILE, "r") as f:
+                data = json.load(f)
+            refresh = data.get("refresh")
+            if not refresh:
+                return False
+            try:
+                resp = requests.post("https://traduction-club.live/api/token/refresh/", json={"refresh": refresh}, timeout=10)
+                if resp.status_code == 200:
+                    new_access = resp.json().get("access")
+                    if new_access:
+                        data["token"] = new_access
+                        with open(TOKEN_FILE, "w") as f:
+                            json.dump(data, f)
+                        return True
+            except Exception as e:
+                print(f"Error refrescando token: {e}")
+        return False
+
+
 # =============================================================================
 # INTERFAZ GRÁFICA (PyQt6)
 # =============================================================================
@@ -336,10 +360,16 @@ class GameLauncherApp(QMainWindow):
         self.btn_about.setObjectName("navbarButton")
         self.btn_about.clicked.connect(self.show_about)
 
+        self.btn_friends = QPushButton("Amigos")
+        self.btn_friends.setObjectName("navbarButton")
+        self.btn_friends.clicked.connect(self.show_friends)
+
         navbar_layout.addWidget(self.btn_library)
         navbar_layout.addWidget(self.btn_settings)
         navbar_layout.addWidget(self.btn_about)
+        navbar_layout.addWidget(self.btn_friends)
         navbar_layout.addStretch()
+
 
         self.session_btn = QPushButton("Cerrar sesión")
         self.session_btn.setObjectName("navbarButton")
@@ -396,6 +426,8 @@ class GameLauncherApp(QMainWindow):
         self.details_page = self._create_details_page()
         self.settings_page = self._create_settings_page()
         self.about_page = self._create_about_page()
+        self.friends_page = self._create_friends_page()
+        self.stacked_widget.addWidget(self.friends_page)
         self.stacked_widget.addWidget(self.library_page)
         self.stacked_widget.addWidget(self.details_page)
         self.stacked_widget.addWidget(self.settings_page)
@@ -446,6 +478,259 @@ class GameLauncherApp(QMainWindow):
 
         # Buscar actualizaciones
         self.check_for_updates()
+        self.migrate_installed_games_versions()
+        self.update_my_status("Conectado")
+
+
+    def update_my_status(self, status, game=None):
+        data = {"status": status}
+        if game:
+            data["game"] = game
+        self.api_post("https://traduction-club.live/api/friends/status/", data)
+
+    def show_friends_window(self):
+        friends = self.api_get("https://traduction-club.live/api/friends/list/")
+        friends_data = friends.get("friends", []) if friends else []
+        dlg = FriendsWindow(self, friends_data=friends_data)
+        dlg.exec()
+
+    def refresh_friends_page(self):
+        self.friends_requests_received.clear()
+        self.friends_requests_sent.clear()
+
+        reqs = self.api_get("https://traduction-club.live/api/friends/requests/")
+        if reqs:
+            for req in reqs.get("received", []):
+                username = req["from_user"]["username"]
+                item = QListWidgetItem(username)
+                avatar_url = req["from_user"].get("avatar_url")
+                if avatar_url:
+                    avatar_path = download_and_cache_image(avatar_url, f"{username}_avatar")
+                    if avatar_path and os.path.exists(avatar_path):
+                        item.setIcon(QIcon(QPixmap(avatar_path).scaled(32, 32)))
+                accept_btn = QPushButton("Aceptar")
+                reject_btn = QPushButton("Rechazar")
+                accept_btn.clicked.connect(functools.partial(self.respond_request, req["id"], "accept"))
+                reject_btn.clicked.connect(functools.partial(self.respond_request, req["id"], "reject"))
+                self.friends_requests_received.addItem(item)
+                widget = QWidget()
+                h = QHBoxLayout(widget)
+                h.addWidget(accept_btn)
+                h.addWidget(reject_btn)
+                h.setContentsMargins(0,0,0,0)
+                self.friends_requests_received.setItemWidget(item, widget)
+            for req in reqs.get("sent", []):
+                username = req["to_user"]["username"]
+                item = QListWidgetItem(f"{username} (pendiente)")
+                avatar_url = req["to_user"].get("avatar_url")
+                if avatar_url:
+                    avatar_path = download_and_cache_image(avatar_url, f"{username}_avatar")
+                    if avatar_path and os.path.exists(avatar_path):
+                        item.setIcon(QIcon(QPixmap(avatar_path).scaled(32, 32)))
+                self.friends_requests_sent.addItem(item)
+    
+    
+
+    def api_get(self, url, params=None):
+        try:
+            headers = get_auth_headers()
+            r = requests.get(url, headers=headers, params=params, timeout=10)
+            if r.status_code == 401:
+                if refresh_access_token():
+                    headers = get_auth_headers()
+                    r = requests.get(url, headers=headers, params=params, timeout=10)
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            print(f"API GET error: {e}")
+            return None
+
+    def api_post(self, url, data=None):
+        try:
+            headers = get_auth_headers()
+            r = requests.post(url, headers=headers, json=data, timeout=10)
+            if r.status_code == 401:
+                if refresh_access_token():
+                    headers = get_auth_headers()
+                    r = requests.post(url, headers=headers, json=data, timeout=10)
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            print(f"API POST error: {e}")
+            return None
+
+    def refresh_friends_page(self):
+        self.friends_requests_received.clear()
+        self.friends_requests_sent.clear()
+
+        reqs = self.api_get("https://traduction-club.live/api/friends/requests/")
+        if reqs:
+            for req in reqs.get("received", []):
+                username = req["from_user"]["username"]
+                item = QListWidgetItem(username)
+                avatar_url = req["from_user"].get("avatar_url")
+                if avatar_url:
+                    avatar_path = download_and_cache_image(avatar_url, f"{username}_avatar")
+                    if avatar_path and os.path.exists(avatar_path):
+                        item.setIcon(QIcon(QPixmap(avatar_path).scaled(32, 32)))
+                accept_btn = QPushButton("Aceptar")
+                reject_btn = QPushButton("Rechazar")
+                accept_btn.clicked.connect(functools.partial(self.respond_request, req["id"], "accept"))
+                reject_btn.clicked.connect(functools.partial(self.respond_request, req["id"], "reject"))
+                self.friends_requests_received.addItem(item)
+                widget = QWidget()
+                h = QHBoxLayout(widget)
+                h.addWidget(accept_btn)
+                h.addWidget(reject_btn)
+                h.setContentsMargins(0,0,0,0)
+                self.friends_requests_received.setItemWidget(item, widget)
+            for req in reqs.get("sent", []):
+                username = req["to_user"]["username"]
+                item = QListWidgetItem(f"{username} (pendiente)")
+                avatar_url = req["to_user"].get("avatar_url")
+                if avatar_url:
+                    avatar_path = download_and_cache_image(avatar_url, f"{username}_avatar")
+                    if avatar_path and os.path.exists(avatar_path):
+                        item.setIcon(QIcon(QPixmap(avatar_path).scaled(32, 32)))
+                self.friends_requests_sent.addItem(item)
+
+    def search_users(self):
+        query = self.friends_search_input.text().strip()
+        self.friends_search_results.clear()
+        if not query:
+            return
+        my_username, _ = load_user_info()
+        users = self.api_get("https://traduction-club.live/api/users/search/", params={"q": query})
+        if not users:
+            return
+        if isinstance(users, dict) and "results" in users:
+            user_list = users["results"]
+        elif isinstance(users, list):
+            user_list = users
+        else:
+            user_list = []
+        for user in user_list:
+            username = user["username"]
+            if username == my_username:
+                continue
+
+            widget = QWidget()
+            layout = QHBoxLayout(widget)
+            layout.setContentsMargins(6, 2, 6, 2)
+            layout.setSpacing(12)
+
+            avatar_label = QLabel()
+            avatar_url = user.get("avatar_url")
+            if avatar_url:
+                avatar_path = download_and_cache_image(avatar_url, f"{username}_avatar")
+                if avatar_path and os.path.exists(avatar_path):
+                    pixmap = QPixmap(avatar_path).scaled(32, 32, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                    avatar_label.setPixmap(pixmap)
+            avatar_label.setFixedSize(36, 36)
+            layout.addWidget(avatar_label)
+
+            name_label = QLabel(username)
+            name_label.setStyleSheet("font-size: 15px; color: #cdd6f4;")
+            layout.addWidget(name_label, stretch=1)
+
+            add_btn = QPushButton("Agregar amigo")
+            add_btn.setStyleSheet("background: #89b4fa; color: #1e1e2e; border-radius: 8px; padding: 6px 16px; font-weight: bold;")
+            add_btn.clicked.connect(functools.partial(self.send_friend_request, username))
+            layout.addWidget(add_btn)
+
+            item = QListWidgetItem()
+            item.setSizeHint(widget.sizeHint())
+            self.friends_search_results.addItem(item)
+            self.friends_search_results.setItemWidget(item, widget)
+
+    def send_friend_request(self, username):
+        resp = self.api_post("https://traduction-club.live/api/friends/request/", {"to_user": username})
+        if resp and "detail" in resp:
+            QMessageBox.information(self, "Solicitud enviada", resp["detail"])
+        else:
+            QMessageBox.information(self, "Solicitud enviada", "Solicitud de amistad enviada.")
+        self.refresh_friends_page()
+
+    def respond_request(self, request_id, action):
+        url = f"https://traduction-club.live/api/friends/requests/{request_id}/{action}/"
+        resp = self.api_post(url)
+        if resp and "detail" in resp:
+            QMessageBox.information(self, "Solicitud", resp["detail"])
+        self.refresh_friends_page()
+
+    def remove_friend(self, username):
+        resp = self.api_post("https://traduction-club.live/api/friends/remove/", {"username": username})
+        if resp and "detail" in resp:
+            QMessageBox.information(self, "Amigos", resp["detail"])
+        self.refresh_friends_page()
+
+    def _create_friends_page(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(32, 32, 32, 32)
+        layout.setSpacing(16)
+
+        # Buscador de usuarios
+        search_layout = QHBoxLayout()
+        self.friends_search_input = QLineEdit()
+        self.friends_search_input.setPlaceholderText("Buscar usuario...")
+        self.friends_search_btn = QPushButton("Buscar")
+        self.friends_search_btn.clicked.connect(self.search_users)
+        search_layout.addWidget(self.friends_search_input)
+        search_layout.addWidget(self.friends_search_btn)
+        layout.addLayout(search_layout)
+
+        # Resultados de busqueda
+        self.friends_search_results = QListWidget()
+        layout.addWidget(QLabel("Resultados de búsqueda:"))
+        layout.addWidget(self.friends_search_results)
+
+        # Lista de amigos
+        friends_btn = QPushButton("Ver lista de amigos")
+        friends_btn.setStyleSheet("background: #89b4fa; color: #1e1e2e; font-weight: bold; border-radius: 8px; padding: 10px;")
+        friends_btn.clicked.connect(self.show_friends_window)
+        layout.addWidget(friends_btn)
+
+
+        # Solicitudes recibidas
+        layout.addWidget(QLabel("Solicitudes recibidas:"))
+        self.friends_requests_received = QListWidget()
+        layout.addWidget(self.friends_requests_received)
+
+        # Solicitudes enviadas
+        layout.addWidget(QLabel("Solicitudes enviadas:"))
+        self.friends_requests_sent = QListWidget()
+        layout.addWidget(self.friends_requests_sent)
+
+        return page
+
+    def show_friends(self):
+        self.refresh_friends_page()
+        self.stacked_widget.setCurrentWidget(self.friends_page)
+    
+    def migrate_installed_games_versions(self):
+        """
+        Para cada juego instalado, si existe el ejecutable pero NO el version.txt,
+        se pone el version.txt con la version del JSON.
+        """
+        if not self.projects_data or not self.projects_data.get("proyectos"):
+            return
+        for project in self.projects_data["proyectos"]:
+            project_id = project.get("id_proyecto")
+            exe_name = project.get("nombre_ejecutable")
+            version = project.get("version")
+            if not project_id or not exe_name or not version:
+                continue
+            for library in load_libraries():
+                exe_path = os.path.join(library, project_id, exe_name)
+                version_file = os.path.join(library, project_id, "version.txt")
+                if os.path.exists(exe_path) and not os.path.exists(version_file):
+                    try:
+                        with open(version_file, "w", encoding="utf-8") as f:
+                            f.write(str(version))
+                        print(f"[DEBUG] Escrito version.txt para {project_id} en {version_file}")
+                    except Exception as e:
+                        print(f"[DEBUG] Error escribiendo version.txt para {project_id}: {e}")
 
     def show_account_details(self):
         username, avatar_url = load_user_info()
@@ -460,7 +745,6 @@ class GameLauncherApp(QMainWindow):
                 avatar_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 layout.addWidget(avatar_label)
         layout.addWidget(QLabel(f"<b>Usuario:</b> {username}"))
-        # Puedes agregar más detalles aquí si tu API los devuelve
         close_btn = QPushButton("Cerrar")
         close_btn.clicked.connect(dialog.accept)
         layout.addWidget(close_btn)
@@ -504,7 +788,7 @@ class GameLauncherApp(QMainWindow):
                 )
 
     def get_current_version(self):
-        return "0.9"
+        return "1.0"
 
     def download_and_run_installer(self, url):
         temp_dir = tempfile.gettempdir()
@@ -531,22 +815,14 @@ class GameLauncherApp(QMainWindow):
                                 percent = int(downloaded * 100 / total)
                                 dialog.set_progress(percent)
                                 QApplication.processEvents()
-            dialog.set_label("Instalando actualización...")
+            dialog.set_label("Abriendo instalador...")
             dialog.set_progress(100)
             QApplication.processEvents()
-            proc = subprocess.Popen(["msiexec", "/i", installer_path, "/qn"])
-            check_timer = QTimer()
-            def check_proc():
-                if proc.poll() is not None:
-                    dialog.accept()
-            check_timer.timeout.connect(check_proc)
-            check_timer.start(500)
-            dialog.exec()
-            check_timer.stop()
+            dialog.close()
             if os.path.exists(lock_path):
                 os.remove(lock_path)
-            QMessageBox.information(self, "Actualización", "El launcher se ha actualizado. Puedes abrirlo de nuevo.")
             QApplication.quit()
+            subprocess.Popen(["msiexec", "/i", installer_path])
         except Exception as e:
             dialog.close()
             if os.path.exists(lock_path):
@@ -679,7 +955,7 @@ class GameLauncherApp(QMainWindow):
         content_widget = QWidget()
         layout = QVBoxLayout(content_widget)
         label = QLabel(
-            "Acerca de<br>Tradu-Launcher<br>Versión 0.9<br><br>"
+            "Acerca de<br>Tradu-Launcher<br>Versión 1.0<br><br>"
             "Traduction Club es un grupo de traducción y desarrollo de videojuegos (próximamente) sin fines de lucro.<br>"
             "No poseemos derechos sobre los materiales, juegos, imágenes o marcas mostradas en esta aplicación.<br>"
             "Todo el contenido pertenece a sus respectivos autores y propietarios legales.<br>"
@@ -993,6 +1269,13 @@ class GameLauncherApp(QMainWindow):
             else:
                 subprocess.Popen(["xdg-open", folder])
 
+    def get_installed_game_version(self, project_id, library_path):
+        version_file = os.path.join(library_path, project_id, "version.txt")
+        if os.path.exists(version_file):
+            with open(version_file, "r", encoding="utf-8") as f:
+                return f.read().strip()
+        return None
+
     def show_project_details(self, project_data):
         self.current_project_id_in_detail_view = project_data['id_proyecto']
         self.detail_title.setText(project_data['titulo'])
@@ -1020,6 +1303,13 @@ class GameLauncherApp(QMainWindow):
 
         executable_path = self.check_if_game_installed(project_data)
         self._current_exe_path = executable_path
+        installed_version = None
+        for library in load_libraries():
+            installed_version = self.get_installed_game_version(project_data['id_proyecto'], library)
+            if installed_version:
+                break
+        remote_version = project_data.get("version")
+        needs_update = installed_version and remote_version and installed_version != remote_version
         if executable_path:
             self.locate_folder_button.setVisible(True)
         else:
@@ -1048,14 +1338,23 @@ class GameLauncherApp(QMainWindow):
             self.cancel_button.clicked.connect(lambda: self.cancel_download(project_data['id_proyecto']))
             self.uninstall_button.setVisible(False)
         elif executable_path:
-            self.install_button.setText("Jugar")
-            self.install_button.setEnabled(True)
-            self.progress_bar.setVisible(False)
-            self.install_button.clicked.connect(lambda: self.launch_game(executable_path))
-            self.cancel_button.setVisible(False)
-            self.uninstall_button.setVisible(True)
-            self.uninstall_button.setEnabled(True)
-            self.uninstall_button.clicked.connect(lambda: self.uninstall_game(project_data))
+            if needs_update:
+                self.install_button.setText("Actualizar")
+                self.install_button.setEnabled(True)
+                self.install_button.clicked.connect(lambda: self.update_game(project_data))
+                self.cancel_button.setVisible(False)
+                self.uninstall_button.setVisible(True)
+                self.uninstall_button.setEnabled(True)
+                self.uninstall_button.clicked.connect(lambda: self.uninstall_game(project_data))
+            else:
+                self.install_button.setText("Jugar")
+                self.install_button.setEnabled(True)
+                self.progress_bar.setVisible(False)
+                self.install_button.clicked.connect(lambda: self.launch_game(executable_path))
+                self.cancel_button.setVisible(False)
+                self.uninstall_button.setVisible(True)
+                self.uninstall_button.setEnabled(True)
+                self.uninstall_button.clicked.connect(lambda: self.uninstall_game(project_data))
         else:
             self.install_button.setText("Instalar")
             self.install_button.setEnabled(True)
@@ -1065,6 +1364,9 @@ class GameLauncherApp(QMainWindow):
             self.uninstall_button.setVisible(False)
 
         self.stacked_widget.setCurrentWidget(self.details_page)
+    
+    def update_game(self, project_data):
+        self.start_installation(project_data)
 
     def cancel_download(self, project_id):
         active = self.active_downloads.get(project_id)
@@ -1236,6 +1538,14 @@ class GameLauncherApp(QMainWindow):
                     QSystemTrayIcon.MessageIcon.Information,
                     5000
                 )
+        
+        project = next((p for p in self.projects_data["proyectos"] if p["id_proyecto"] == project_id), None)
+        if project and project.get("version"):
+            for library in load_libraries():
+                version_file = os.path.join(library, project_id, "version.txt")
+                if os.path.exists(os.path.join(library, project_id)):
+                    with open(version_file, "w", encoding="utf-8") as f:
+                        f.write(str(project["version"]))
 
         self.populate_sidebar()
 
@@ -1261,6 +1571,11 @@ class GameLauncherApp(QMainWindow):
                 self.install_button.setEnabled(False)
                 return
             process = subprocess.Popen([norm_executable_path], cwd=game_dir)
+
+            # if self.settings.get("overlay_enabled", True):
+            #     overlay_path = os.path.abspath("overlay.py")
+            #     python_exe = sys.executable
+            #     self.overlay_process = subprocess.Popen([python_exe, overlay_path, exe_name])
 
             if self.settings.get("overlay_enabled", True):
                 overlay_path = os.path.abspath("overlay.exe")
@@ -1288,6 +1603,8 @@ class GameLauncherApp(QMainWindow):
             if self.current_project_id_in_detail_view == p["id_proyecto"]:
                 project = p
                 break
+        if project:
+            self.update_my_status("En juego", project["titulo"])
         if self.rpc and project:
             try:
                 self.rpc.update(
@@ -1307,6 +1624,8 @@ class GameLauncherApp(QMainWindow):
             except Exception as e:
                 print(f"Error cerrando overlay: {e}")
             self.overlay_process = None
+        
+        self.update_my_status("Conectado")
 
         # restaurar el botón "Jugar" cuando el juego se cierre
         self.install_button.setText("Jugar")
@@ -1320,6 +1639,13 @@ class GameLauncherApp(QMainWindow):
                 )
             except Exception as e:
                 print(f"Error al actualizar Rich Presence: {e}")
+
+    def closeEvent(self, event):
+        try:
+            self.update_my_status("Desconectado")
+        except Exception as e:
+            print(f"Error al actualizar estado a Desconectado: {e}")
+        super().closeEvent(event)
 
 # =============================================================================
 # MONITOR DE JUEGOS
@@ -1413,6 +1739,15 @@ class LoginWidget(QWidget):
         self.login_btn.clicked.connect(self.try_login)
         layout.addWidget(self.login_btn)
 
+        self.error_label = QLabel("o")
+        self.error_label.setStyleSheet("font-size: 14px;")
+        layout.addWidget(self.error_label, alignment=Qt.AlignmentFlag.AlignHCenter)
+
+        self.web_login_btn = QPushButton("Iniciar sesión en la web")
+        self.web_login_btn.setStyleSheet("background: #89b4fa; color: #1e1e2e; font-weight: bold; border-radius: 8px; padding: 10px;")
+        self.web_login_btn.clicked.connect(self.web_login)
+        layout.addWidget(self.web_login_btn)
+
         self.error_label = QLabel("")
         self.error_label.setStyleSheet("color: #f38ba8; font-size: 14px;")
         layout.addWidget(self.error_label)
@@ -1421,6 +1756,35 @@ class LoginWidget(QWidget):
         self.register_btn.setStyleSheet("background: #fab387; color: #1e1e2e; font-weight: bold; border-radius: 8px; padding: 8px;")
         self.register_btn.clicked.connect(lambda: webbrowser.open("https://traduction-club.live/signup/"))
         layout.addWidget(self.register_btn)
+
+    def get_user_info_from_token(self, token):
+        try:
+            resp = requests.get(
+                "https://traduction-club.live/api/userinfo/",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=10
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                return data.get("username"), data.get("avatar_url")
+        except Exception as e:
+            print(f"Error obteniendo info de usuario: {e}")
+        return None
+
+    def web_login(self):
+        port = 54321
+        server = start_token_server(port)
+        login_url = f"https://traduction-club.live/accounts/launcher-login/?redirect_uri=http://localhost:{port}/"
+        webbrowser.open(login_url)
+        token, username, avatar_url = wait_for_token(timeout=120)
+        server.shutdown()
+        if token:
+            if username:
+                self.login_success.emit((token, username, avatar_url))
+            else:
+                self.error_label.setText("No se recibió el usuario. Intenta de nuevo.")
+        else:
+            self.error_label.setText("No se recibió el token. Intenta de nuevo.")
 
     def try_login(self):
         username_input = self.user_input.text().strip()
@@ -1438,6 +1802,119 @@ class LoginWidget(QWidget):
             self.login_success.emit((token, username, avatar_url))
         else:
             self.error_label.setText("Usuario o contraseña incorrectos.")
+
+class TokenHandler(BaseHTTPRequestHandler):
+    token = None
+    username = None
+    avatar_url = None
+    def do_GET(self):
+        from urllib.parse import urlparse, parse_qs, unquote
+        qs = parse_qs(urlparse(self.path).query)
+        if "token" in qs:
+            TokenHandler.token = qs["token"][0]
+            TokenHandler.username = qs.get("username", [None])[0]
+            TokenHandler.avatar_url = qs.get("avatar_url", [None])[0]
+            if TokenHandler.avatar_url:
+                TokenHandler.avatar_url = unquote(TokenHandler.avatar_url)
+            self.send_response(200)
+            self.send_header("Content-type", "text/html")
+            self.end_headers()
+            self.wfile.write(b"<html><body><h2>Login exitoso. Puedes cerrar esta ventana y volver al launcher.</h2></body></html>")
+            import threading
+            threading.Timer(5.0, self.server.shutdown).start()
+        elif self.path.startswith("/favicon.ico"):
+            self.send_response(404)
+            self.end_headers()
+        else:
+            self.send_response(400)
+            self.end_headers()
+
+def start_token_server(port=54321):
+    TokenHandler.token = None
+    server = HTTPServer(("localhost", port), TokenHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+def wait_for_token(timeout=360):
+    import time
+    start = time.time()
+    while TokenHandler.token is None and (time.time() - start) < timeout:
+        time.sleep(0.5)
+    return TokenHandler.token, TokenHandler.username, TokenHandler.avatar_url
+
+# =============================================================================
+# VENTANA DE AMIGOS
+# =============================================================================
+class FriendsWindow(QDialog):
+    def __init__(self, parent=None, friends_data=None):
+        super().__init__(parent)
+        self.setWindowTitle("Amigos")
+        self.setMinimumSize(350, 500)
+        layout = QVBoxLayout(self)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        content = QWidget()
+        vbox = QVBoxLayout(content)
+        vbox.setSpacing(10)
+        vbox.setContentsMargins(10, 10, 10, 10)
+
+        # friends_data: lista de dicts con username, avatar_url, status, game
+        if friends_data:
+            for friend in friends_data:
+                row = QWidget()
+                row_layout = QHBoxLayout(row)
+                row_layout.setContentsMargins(0, 0, 0, 0)
+                # Avatar
+                avatar = QLabel()
+                avatar.setFixedSize(36, 36)
+                avatar_path = download_and_cache_image(friend.get("avatar_url"), f"{friend['username']}_avatar")
+                if avatar_path and os.path.exists(avatar_path):
+                    pixmap = QPixmap(avatar_path).scaled(36, 36, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                    avatar.setPixmap(pixmap)
+                row_layout.addWidget(avatar)
+                # Nombre y estado
+                info = QLabel(f"{friend['username']}\n{friend.get('status', 'Desconectado')}")
+                info.setStyleSheet("font-size: 15px; color: #cdd6f4;")
+                row_layout.addWidget(info, stretch=1)
+                # Juego actual
+                game = QLabel(friend.get("game", ""))
+                game.setStyleSheet("font-size: 13px; color: #a6e3a1;")
+                row_layout.addWidget(game)
+                vbox.addWidget(row)
+        else:
+            vbox.addWidget(QLabel("No tienes amigos aún."))
+
+        content.setLayout(vbox)
+        scroll.setWidget(content)
+        layout.addWidget(scroll)
+
+# =============================================================================
+# MIGRACION MOMENTANEA PARA EL CAMBIO DE VERSION DE LAUNCHER Y EXTENDER
+# COMPATIBILIDAD ENTRE VERIONES DEL MISMO
+# =============================================================================
+def migrate_installed_games_versions(self):
+    """
+    Para cada juego instalado, si existe el ejecutable pero NO el version.txt,
+    se pone el version.txt con la version del JSON.
+    """
+    if not self.projects_data or not self.projects_data.get("proyectos"):
+        return
+    for project in self.projects_data["proyectos"]:
+        project_id = project.get("id_proyecto")
+        exe_name = project.get("nombre_ejecutable")
+        version = project.get("version")
+        if not project_id or not exe_name or not version:
+            continue
+        for library in load_libraries():
+            exe_path = os.path.join(library, project_id, exe_name)
+            version_file = os.path.join(library, project_id, "version.txt")
+            if os.path.exists(exe_path) and not os.path.exists(version_file):
+                try:
+                    with open(version_file, "w", encoding="utf-8") as f:
+                        f.write(str(version))
+                    print(f"[DEBUG] Escrito version.txt para {project_id} en {version_file}")
+                except Exception as e:
+                    print(f"[DEBUG] Error escribiendo version.txt para {project_id}: {e}")
 
 # =============================================================================
 # ESTILOS (QSS) Y EL def main()
