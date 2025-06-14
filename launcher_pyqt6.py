@@ -490,7 +490,13 @@ class GameLauncherApp(QMainWindow):
 
     def show_friends_window(self):
         friends = self.api_get("https://traduction-club.live/api/friends/list/")
-        friends_data = friends.get("friends", []) if friends else []
+        # Soporta ambos formatos: dict con "friends" o lista directa
+        if isinstance(friends, dict) and "friends" in friends:
+            friends_data = friends["friends"]
+        elif isinstance(friends, list):
+            friends_data = friends
+        else:
+            friends_data = []
         dlg = FriendsWindow(self, friends_data=friends_data)
         dlg.exec()
 
@@ -567,27 +573,50 @@ class GameLauncherApp(QMainWindow):
         if reqs:
             for req in reqs.get("received", []):
                 username = req["from_user"]["username"]
-                item = QListWidgetItem(username)
                 avatar_url = req["from_user"].get("avatar_url")
+
+                widget = QWidget()
+                layout = QHBoxLayout(widget)
+                layout.setContentsMargins(6, 2, 6, 2)
+                layout.setSpacing(12)
+
+                # Avatar
+                avatar_label = QLabel()
                 if avatar_url:
                     avatar_path = download_and_cache_image(avatar_url, f"{username}_avatar")
                     if avatar_path and os.path.exists(avatar_path):
-                        item.setIcon(QIcon(QPixmap(avatar_path).scaled(32, 32)))
+                        pixmap = QPixmap(avatar_path).scaled(32, 32, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                        avatar_label.setPixmap(pixmap)
+                avatar_label.setFixedSize(36, 36)
+                layout.addWidget(avatar_label)
+
+                # Nombre de usuario
+                name_label = QLabel(username)
+                name_label.setStyleSheet("font-size: 15px; color: #cdd6f4;")
+                layout.addWidget(name_label, stretch=1)
+
+                # Botón aceptar
                 accept_btn = QPushButton("Aceptar")
-                reject_btn = QPushButton("Rechazar")
+                accept_btn.setStyleSheet("background: #a6e3a1; color: #1e1e2e; border-radius: 8px; padding: 6px 12px; font-weight: bold;")
                 accept_btn.clicked.connect(functools.partial(self.respond_request, req["id"], "accept"))
+                layout.addWidget(accept_btn)
+
+                # Botón rechazar
+                reject_btn = QPushButton("Rechazar")
+                reject_btn.setStyleSheet("background: #f38ba8; color: #fff; border-radius: 8px; padding: 6px 12px; font-weight: bold;")
                 reject_btn.clicked.connect(functools.partial(self.respond_request, req["id"], "reject"))
+                layout.addWidget(reject_btn)
+
+                # Crear item y asignar widget
+                item = QListWidgetItem()
+                item.setSizeHint(widget.sizeHint())
                 self.friends_requests_received.addItem(item)
-                widget = QWidget()
-                h = QHBoxLayout(widget)
-                h.addWidget(accept_btn)
-                h.addWidget(reject_btn)
-                h.setContentsMargins(0,0,0,0)
                 self.friends_requests_received.setItemWidget(item, widget)
+
             for req in reqs.get("sent", []):
                 username = req["to_user"]["username"]
-                item = QListWidgetItem(f"{username} (pendiente)")
                 avatar_url = req["to_user"].get("avatar_url")
+                item = QListWidgetItem(f"{username} (pendiente)")
                 if avatar_url:
                     avatar_path = download_and_cache_image(avatar_url, f"{username}_avatar")
                     if avatar_path and os.path.exists(avatar_path):
