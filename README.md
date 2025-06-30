@@ -2,7 +2,7 @@
 
 **Tradu-Launcher** es el cliente de escritorio oficial de [Traduction Club!](https://traduction-club.live/), diseñado para descargar, instalar y gestionar todas nuestras traducciones y proyectos de forma centralizada en Windows.
 
-![Logo](https://static-trad-club.nyc3.cdn.digitaloceanspaces.com/icon.png)
+<img src="https://static-trad-club.nyc3.cdn.digitaloceanspaces.com/icon.png" alt="Logo" width="120"/>
 
 ---
 
@@ -43,7 +43,7 @@
 
 ## 📚 Documentación
 
-Consulta la [Wiki del proyecto](./trad-club-launcher-win.wiki/Home.md) para más detalles sobre todas las funciones, preguntas frecuentes y solución de problemas.
+Consulta la [Wiki del proyecto](https://github.com/Just3090/trad-club-launcher-win/wiki) para más detalles sobre todas las funciones, preguntas frecuentes y solución de problemas.
 
 ---
 
@@ -67,7 +67,7 @@ Consulta la [Wiki del proyecto](./trad-club-launcher-win.wiki/Home.md) para más
 
 ## ⚠️ Aviso legal
 
-Tradu-Launcher y Traduction Club no poseen los derechos de los juegos originales.  
+Tradu-Launcher y Traduction Club! no poseen los derechos de los juegos originales.  
 Todo el contenido pertenece a sus respectivos autores y propietarios legales.  
 Este proyecto es sin fines de lucro y solo distribuye traducciones y parches.
 
