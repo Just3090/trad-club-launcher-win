@@ -2,7 +2,7 @@
 
 **Tradu-Launcher** es el cliente de escritorio oficial de [Traduction Club!](https://traduction-club.live/), diseñado para descargar, instalar y gestionar todas nuestras traducciones y proyectos de forma centralizada en Windows.
 
-![Logo](icon.png)
+![Logo](https://static-trad-club.nyc3.cdn.digitaloceanspaces.com/icon.png)
 
 ---
 
