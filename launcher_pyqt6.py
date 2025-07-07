@@ -47,24 +47,6 @@ LIBRARIES_FILE = "libraries.json"
 # Archivo de configs
 SETTINGS_FILE = "settings.json"
 
-# def send_overlay_rect(x, y, w, h, r, g, b, a):
-#     try:
-#         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-#         s.connect(('127.0.0.1', 54321))
-#         cmd = f"draw_rect {x} {y} {w} {h} {r} {g} {b} {a}\n"
-#         s.sendall(cmd.encode('utf-8'))
-#         s.close()
-#     except Exception as e:
-#         print(f"Error enviando overlay: {e}")
-
-# def inject_overlay_dll(process_name, dll_path):
-#     try:
-#         injector_path = os.path.join("overlay_native", "injector.exe")
-#         # Llama al inyector y espera a que termine (puedes usar Popen si prefieres no bloquear)
-#         subprocess.Popen([injector_path, process_name, dll_path])
-#     except Exception as e:
-#         print(f"Error al inyectar overlay: {e}")
-
 # TOKEN
 TOKEN_FILE = "user_token.json"
 
