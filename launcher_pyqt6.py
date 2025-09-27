@@ -27,6 +27,9 @@ import webbrowser
 import functools
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+import io
+import datetime
+import uuid
 
 # =============================================================================
 # CONFIGURACIÓN Y LÓGICA DE DATOS
@@ -1178,6 +1181,12 @@ class GameLauncherApp(QMainWindow):
         self.locate_folder_button.clicked.connect(self._on_locate_folder_clicked)
         header_layout.addWidget(self.locate_folder_button, alignment=Qt.AlignmentFlag.AlignRight)
 
+        self.tradu_cloud_button = QPushButton("Tradu-Cloud")
+        self.tradu_cloud_button.setObjectName("traduCloudButton")
+        self.tradu_cloud_button.setVisible(False)
+        self.tradu_cloud_button.clicked.connect(self._on_tradu_cloud_clicked)
+        header_layout.addWidget(self.tradu_cloud_button, alignment=Qt.AlignmentFlag.AlignRight)
+
         # --- SCROLLABLE CONTENT ---
         content_widget = QWidget()
         content_layout = QVBoxLayout(content_widget)
@@ -1280,6 +1289,11 @@ class GameLauncherApp(QMainWindow):
             else:
                 subprocess.Popen(["xdg-open", folder])
 
+    def _on_tradu_cloud_clicked(self):
+        if hasattr(self, "_current_project_title_for_cloud") and self._current_project_title_for_cloud:
+            dialog = TraduCloudDialog(self._current_project_title_for_cloud, self)
+            dialog.exec()
+
     def get_installed_game_version(self, project_id, library_path):
         version_file = os.path.join(library_path, project_id, "version.txt")
         if os.path.exists(version_file):
@@ -1325,6 +1339,15 @@ class GameLauncherApp(QMainWindow):
             self.locate_folder_button.setVisible(True)
         else:
             self.locate_folder_button.setVisible(False)
+
+        # Logica para el boton de Tradu-Cloud
+        if project_data['id_proyecto'] == "MASES":
+            self.tradu_cloud_button.setVisible(True)
+            self._current_project_title_for_cloud = project_data['titulo']
+        else:
+            self.tradu_cloud_button.setVisible(False)
+            self._current_project_title_for_cloud = None
+
         try:
             self.install_button.clicked.disconnect()
         except TypeError:
@@ -1928,6 +1951,180 @@ def migrate_installed_games_versions(self):
                     print(f"[DEBUG] Error escribiendo version.txt para {project_id}: {e}")
 
 # =============================================================================
+# INTEGRACION DE TRADU-CLOUD
+# =============================================================================
+class TraduCloudDialog(QDialog):
+    def __init__(self, project_title, parent=None):
+        super().__init__(parent)
+        self.project_title = project_title
+        self.setWindowTitle(f"Tradu-Cloud: {project_title}")
+        self.setMinimumSize(400, 250)
+        self.setStyleSheet("background: #1e1e2e; color: #cdd6f4;")
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(15)
+
+        title_label = QLabel("Gestionar guardado en la nube")
+        title_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #89b4fa;")
+        layout.addWidget(title_label, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        self.status_label = QLabel("Sincroniza tu progreso para continuar en otros dispositivos.")
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        self.upload_btn = QPushButton("Subir progreso a la nube")
+        self.upload_btn.setStyleSheet("background: #a6e3a1; color: #1e1e2e; font-weight: bold; padding: 10px; border-radius: 8px;")
+        self.upload_btn.clicked.connect(self.upload_save)
+        layout.addWidget(self.upload_btn)
+
+        self.download_btn = QPushButton("Descargar progreso de la nube")
+        self.download_btn.setStyleSheet("background: #fab387; color: #1e1e2e; font-weight: bold; padding: 10px; border-radius: 8px;")
+        self.download_btn.clicked.connect(self.download_save)
+        layout.addWidget(self.download_btn)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        layout.addWidget(self.progress_bar)
+
+    def _get_persistent_path(self):
+        return os.path.expandvars(r"%APPDATA%\RenPy\Monika After Story")
+
+    def api_post_file(self, url, files, data):
+        try:
+            headers = get_auth_headers()
+            # No establecer Content-Type, requests lo hara con el boundary correcto
+            r = requests.post(url, headers=headers, files=files, data=data, timeout=60)
+            if r.status_code == 401:
+                if refresh_access_token():
+                    headers = get_auth_headers()
+                    r = requests.post(url, headers=headers, files=files, data=data, timeout=60)
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            self.status_label.setText(f"Error de red: {e}")
+            return None
+
+    def upload_save(self):
+        persistent_path = self._get_persistent_path()
+        if not os.path.exists(persistent_path):
+            QMessageBox.warning(self, "Error", "La carpeta de guardado de Monika After Story no existe.")
+            return
+
+        self.status_label.setText("Comprimiendo archivos...")
+        QApplication.processEvents()
+
+        # Nombre único para el zip
+        now = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        unique_id = uuid.uuid4().hex[:8]
+        zip_filename = f"{self.project_title}_{now}_{unique_id}.zip"
+        zip_path = os.path.join(tempfile.gettempdir(), zip_filename)
+
+        excluded_dirs = ['android', 'sync']
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for root, dirs, files in os.walk(persistent_path):
+                dirs[:] = [d for d in dirs if d not in excluded_dirs]
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    arcname = os.path.relpath(file_path, persistent_path)
+                    zf.write(file_path, arcname)
+
+        self.status_label.setText("Subiendo a la nube...")
+        QApplication.processEvents()
+
+        token = load_token()
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+
+        with open(zip_path, "rb") as f:
+            files = {'save_file': (zip_filename, f, 'application/zip')}
+            data = {'project_title': 'MASES'}
+            try:
+                response = requests.post(
+                    "https://traduction-club.live/api/game-saves/sync/",
+                    headers=headers,
+                    files=files,
+                    data=data,
+                    timeout=60
+                )
+                if response.status_code == 401:
+                    if refresh_access_token():
+                        token = load_token()
+                        headers = {"Authorization": f"Bearer {token}"} if token else {}
+                        f.seek(0)
+                        response = requests.post(
+                            "https://traduction-club.live/api/game-saves/sync/",
+                            headers=headers,
+                            files=files,
+                            data=data,
+                            timeout=60
+                        )
+                if response.ok and response.json().get('status') == 'Save file uploaded successfully.':
+                    self.status_label.setText("¡Progreso subido con éxito!")
+                    QMessageBox.information(self, "Éxito", "Tu progreso se ha guardado en la nube.")
+                else:
+                    error_msg = response.json().get('error', 'Ocurrió un error desconocido.') if response.content else 'Fallo en la conexión.'
+                    self.status_label.setText(f"Error al subir: {error_msg}")
+                    QMessageBox.critical(self, "Error", f"No se pudo subir el progreso: {error_msg}")
+            except Exception as e:
+                self.status_label.setText(f"Error de red: {e}")
+                QMessageBox.critical(self, "Error", f"No se pudo subir el progreso: {e}")
+
+        try:
+            os.remove(zip_path)
+        except Exception:
+            pass
+
+    def download_save(self):
+        reply = QMessageBox.question(
+            self, "Confirmar descarga",
+            "Esto sobrescribirá tus datos de guardado locales. ¿Estás seguro de que quieres continuar?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.No:
+            return
+
+        self.status_label.setText("Descargando desde la nube...")
+        QApplication.processEvents()
+
+        try:
+            url = f"https://traduction-club.live/api/game-saves/sync/?project_title=MASES"
+            headers = get_auth_headers()
+            response = requests.get(url, headers=headers, allow_redirects=True, stream=True, timeout=60)
+            response.raise_for_status()
+
+            persistent_path = self._get_persistent_path()
+            os.makedirs(persistent_path, exist_ok=True)
+
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp_zip:
+                for chunk in response.iter_content(8192):
+                    tmp_zip.write(chunk)
+                tmp_zip_path = tmp_zip.name
+
+            self.status_label.setText("Extrayendo archivos...")
+            QApplication.processEvents()
+
+            with zipfile.ZipFile(tmp_zip_path, 'r') as zip_ref:
+                zip_ref.extractall(persistent_path)
+            
+            os.remove(tmp_zip_path)
+
+            self.status_label.setText("¡Progreso descargado y restaurado con éxito!")
+            QMessageBox.information(self, "Éxito", "Tu progreso ha sido restaurado desde la nube.")
+
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 404:
+                msg = "No se encontró un archivo de guardado en la nube para este juego."
+                self.status_label.setText(msg)
+                QMessageBox.warning(self, "No encontrado", msg)
+            else:
+                msg = f"Error al descargar: {e}"
+                self.status_label.setText(msg)
+                QMessageBox.critical(self, "Error", msg)
+        except Exception as e:
+            msg = f"Ocurrió un error inesperado: {e}"
+            self.status_label.setText(msg)
+            QMessageBox.critical(self, "Error", msg)
+
+# =============================================================================
 # ESTILOS (QSS) Y EL def main()
 # =============================================================================
 
@@ -1980,6 +2177,19 @@ QScrollArea {
     border-radius: 8px;
     padding: 10px;
     border: none;
+}
+#traduCloudButton {
+    background-color: #cba6f7;
+    color: #1e1e2e;
+    font-size: 14px;
+    font-weight: bold;
+    border-radius: 8px;
+    padding: 8px 16px;
+    margin-left: 10px;
+    border: none;
+}
+#traduCloudButton:hover {
+    background-color: #f5c2e7;
 }
 #installButton:hover, #backButton:hover {
     background-color: #74c7ec;
